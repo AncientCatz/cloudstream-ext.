@@ -13,7 +13,7 @@ steps:
   build:
     image: androidsdk/android-31
     commands:
-      - export GITHUB_REPOSITORY=https://codeberg.org/$CI_REPO; echo $GITHUB_REPOSITORY
+      - export GIT_REPOSITORY=https://codeberg.org/$CI_REPO; echo $GIT_REPOSITORY
       - bash gradlew make makePluginsJson --stacktrace
       - cp **/build/*.cs3 $CI_WORKSPACE/../builds
       - cp build/plugins.json $CI_WORKSPACE/../builds
