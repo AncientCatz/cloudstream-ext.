@@ -1,0 +1,8 @@
+{
+  "name": "AncientCatz's CS3 Exts. Repository",
+  "description": "Most of the extensions are Anime",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://codeberg.org/AncientCatz/cloudstream-ext./raw/branch/builds/plugins.json"
+  ]
+}
