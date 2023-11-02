@@ -1,7 +1,6 @@
 package com.lagradost
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.SflixProvider.Companion.extractRabbitStream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
@@ -45,6 +44,109 @@ class AniWatchProvider : MainAPI() {
                 "Finished Airing" -> ShowStatus.Completed
                 "Currently Airing" -> ShowStatus.Ongoing
                 else -> ShowStatus.Completed
+            }
+        }
+
+        suspend fun MainAPI.extractRabbitStream(
+            url: String,
+            subtitleCallback: (SubtitleFile) -> Unit,
+            callback: (ExtractorLink) -> Unit,
+            useSidAuthentication: Boolean,
+            /** Used for extractorLink name, input: Source name */
+            extractorData: String? = null,
+            decryptKey: String? = null,
+            nameTransformer: (String) -> String,
+        ) = suspendSafeApiCall {
+            // https://rapid-cloud.ru/embed-6/dcPOVRE57YOT?z= -> https://rapid-cloud.ru/embed-6
+            val mainIframeUrl =
+                url.substringBeforeLast("/")
+            val mainIframeId = url.substringAfterLast("/")
+                .substringBefore("?") // https://rapid-cloud.ru/embed-6/dcPOVRE57YOT?z= -> dcPOVRE57YOT
+//            val iframe = app.get(url, referer = mainUrl)
+//            val iframeKey =
+//                iframe.document.select("script[src*=https://www.google.com/recaptcha/api.js?render=]")
+//                    .attr("src").substringAfter("render=")
+//            val iframeToken = getCaptchaToken(url, iframeKey)
+//            val number =
+//                Regex("""recaptchaNumber = '(.*?)'""").find(iframe.text)?.groupValues?.get(1)
+
+            var sid: String? = null
+            if (useSidAuthentication && extractorData != null) {
+                negotiateNewSid(extractorData)?.also { pollingData ->
+                    app.post(
+                        "$extractorData&t=${generateTimeStamp()}&sid=${pollingData.sid}",
+                        requestBody = "40".toRequestBody(),
+                        timeout = 60
+                    )
+                    val text = app.get(
+                        "$extractorData&t=${generateTimeStamp()}&sid=${pollingData.sid}",
+                        timeout = 60
+                    ).text.replaceBefore("{", "")
+
+                    sid = parseJson<PollingData>(text).sid
+                    ioSafe { app.get("$extractorData&t=${generateTimeStamp()}&sid=${pollingData.sid}") }
+                }
+            }
+            val getSourcesUrl = "${
+                mainIframeUrl.replace(
+                    "/embed",
+                    "/ajax/embed"
+                )
+            }/getSources?id=$mainIframeId${sid?.let { "$&sId=$it" } ?: ""}"
+            val response = app.get(
+                getSourcesUrl,
+                referer = mainUrl,
+                headers = mapOf(
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Accept" to "*/*",
+                    "Accept-Language" to "en-US,en;q=0.5",
+                    "Connection" to "keep-alive",
+                    "TE" to "trailers"
+                )
+            )
+
+            val sourceObject = if (decryptKey != null) {
+                val encryptedMap = response.parsedSafe<SourceObjectEncrypted>()
+                val sources = encryptedMap?.sources
+                if (sources == null || encryptedMap.encrypted == false) {
+                    response.parsedSafe()
+                } else {
+                    val decrypted = decryptMapped<List<Sources>>(sources, decryptKey)
+                    SourceObject(
+                        sources = decrypted,
+                        tracks = encryptedMap.tracks
+                    )
+                }
+            } else {
+                response.parsedSafe()
+            } ?: return@suspendSafeApiCall
+
+            sourceObject.tracks?.forEach { track ->
+                track?.toSubtitleFile()?.let { subtitleFile ->
+                    subtitleCallback.invoke(subtitleFile)
+                }
+            }
+
+            val list = listOf(
+                sourceObject.sources to "source 1",
+                sourceObject.sources1 to "source 2",
+                sourceObject.sources2 to "source 3",
+                sourceObject.sourcesBackup to "source backup"
+            )
+
+            list.forEach { subList ->
+                subList.first?.forEach { source ->
+                    source?.toExtractorLink(
+                        this,
+                        nameTransformer(subList.second),
+                        extractorData,
+                    )
+                        ?.forEach {
+                            // Sets AniWatch SID used for video loading
+//                            (this as? AniWatchProvider)?.sid?.set(it.url.hashCode(), sid)
+                            callback(it)
+                        }
+                }
             }
         }
     }
@@ -169,7 +271,7 @@ class AniWatchProvider : MainAPI() {
         return Actor(name = name, image = image)
     }
 
-    data class ZoroSyncData(
+    data class AniWatchSyncData(
         @JsonProperty("mal_id") val malId: String?,
         @JsonProperty("anilist_id") val aniListId: String?,
     )
@@ -178,7 +280,7 @@ class AniWatchProvider : MainAPI() {
         val html = app.get(url).text
         val document = Jsoup.parse(html)
 
-        val syncData = tryParseJson<ZoroSyncData>(document.selectFirst("#syncData")?.data())
+        val syncData = tryParseJson<AniWatchSyncData>(document.selectFirst("#syncData")?.data())
 
         val title = document.selectFirst(".anisc-detail > .film-name")?.text().toString()
         val poster = document.selectFirst(".anisc-poster img")?.attr("src")
